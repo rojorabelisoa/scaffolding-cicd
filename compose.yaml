@@ -1,0 +1,232 @@
+name: agentic-devops
+services:
+  jenkins:
+    build: ./infrastructure/jenkins
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${JENKINS_PORT:-8080}:8080"
+    environment:
+      JENKINS_PUBLIC_URL: http://localhost:${JENKINS_PORT:-8080}/
+      GITHUB_APP_ID: ${GITHUB_APP_ID:?Set GITHUB_APP_ID in .env}
+      GITHUB_OWNER: ${GITHUB_OWNER:?Set GITHUB_OWNER in .env}
+      GITHUB_DEMO_REPO: ${GITHUB_DEMO_REPO:-agentic-devops-demo-app}
+    secrets:
+      - jenkins_admin_password
+      - jenkins_agent_ssh_key
+      - jenkins_agent_host_key.pub
+      - sonarqube_jenkins_token
+      - github_app_key.pem
+    volumes:
+      - jenkins_home:/var/jenkins_home
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://localhost:8080/login"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 120s
+    networks: [devops]
+
+  sonar-db:
+    image: postgres:16.15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: sonar
+      POSTGRES_USER: sonar
+      POSTGRES_PASSWORD: ${SONAR_DB_PASSWORD:?Set SONAR_DB_PASSWORD in .env}
+    volumes:
+      - sonar_db:/var/lib/postgresql/data
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sonar -d sonar"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [devops]
+
+  sonarqube:
+    image: sonarqube:26.10.0.133078-community
+    restart: unless-stopped
+    depends_on:
+      sonar-db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${SONAR_PORT:-9000}:9000"
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://sonar-db:5432/sonar
+      SONAR_JDBC_USERNAME: sonar
+      SONAR_JDBC_PASSWORD: ${SONAR_DB_PASSWORD:?Set SONAR_DB_PASSWORD in .env}
+      SONAR_TELEMETRY_ENABLE: "false"
+    volumes:
+      - sonar_data:/opt/sonarqube/data
+      - sonar_extensions:/opt/sonarqube/extensions
+      - sonar_logs:/opt/sonarqube/logs
+    mem_limit: 4g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/api/system/status | grep -q '\"status\":\"UP\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 180s
+    networks: [devops]
+
+  agent-db:
+    image: postgres:16.15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: agentdb
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: ${AGENT_DB_PASSWORD:?Set AGENT_DB_PASSWORD in .env}
+    volumes:
+      - agent_db:/var/lib/postgresql/data
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent -d agentdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [devops]
+
+  registry:
+    image: registry:2.8.3
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${REGISTRY_PORT:-5001}:5000"
+    environment:
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+    volumes:
+      - registry_data:/var/lib/registry
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:5000/v2/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [devops, build]
+
+  # Isolated build agent: driven by the controller over SSH (pinned host key), no Docker socket.
+  jenkins-agent:
+    build: ./infrastructure/jenkins-agent
+    restart: unless-stopped
+    secrets:
+      - jenkins_agent_host_key
+      - jenkins_agent_host_key.pub
+      - jenkins_agent_ssh_key.pub
+    volumes:
+      - agent_workspace:/home/jenkins/agent
+      - agent_m2:/home/jenkins/.m2
+      - ./secrets/buildkit/ca.pem:/run/secrets/buildkit/ca.pem:ro
+      - ./secrets/buildkit/client.pem:/run/secrets/buildkit/client.pem:ro
+      - ./secrets/buildkit/client-key.pem:/run/secrets/buildkit/client-key.pem:ro
+    mem_limit: 3g
+    networks: [devops, build]
+
+  # Rootless BuildKit (non-privileged); only reachable on the build network, mTLS required.
+  buildkitd:
+    image: moby/buildkit:v0.34.0-rootless
+    restart: unless-stopped
+    command:
+      - --addr=tcp://0.0.0.0:1234
+      - --tlscacert=/certs/ca.pem
+      - --tlscert=/certs/server.pem
+      - --tlskey=/certs/server-key.pem
+      - --config=/etc/buildkit/buildkitd.toml
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=buildkitd-rootless  # see scripts/colima-apparmor.sh
+      - systempaths=unconfined
+    volumes:
+      - buildkit_state:/home/user/.local/share/buildkit
+      - ./infrastructure/buildkit/buildkitd.toml:/etc/buildkit/buildkitd.toml:ro
+      - ./secrets/buildkit/ca.pem:/certs/ca.pem:ro
+      - ./secrets/buildkit/server.pem:/certs/server.pem:ro
+      - ./secrets/buildkit/server-key.pem:/certs/server-key.pem:ro
+    mem_limit: 2g
+    networks: [build]
+
+  ai-agent:
+    profiles: [agent]
+    build: ./ai-devops-agent
+    restart: unless-stopped
+    depends_on:
+      agent-db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://agent:${AGENT_DB_PASSWORD:?Set AGENT_DB_PASSWORD in .env}@agent-db:5432/agentdb
+      JENKINS_URL: http://jenkins:8080
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-none}
+    ports:
+      - "127.0.0.1:${AGENT_PORT:-8000}:8000"
+    networks: [devops]
+
+  prometheus:
+    profiles: [observability]
+    image: prom/prometheus:v3.2.1
+    restart: unless-stopped
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks: [devops]
+
+  grafana:
+    profiles: [observability]
+    image: grafana/grafana:11.5.2
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks: [devops]
+
+  ollama:
+    profiles: [local-llm]
+    image: ollama/ollama:0.40.3
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    networks: [devops]
+
+secrets:
+  jenkins_admin_password:
+    file: ./secrets/jenkins_admin_password
+  jenkins_agent_ssh_key:
+    file: ./secrets/jenkins_agent_ssh_key
+  jenkins_agent_ssh_key.pub:
+    file: ./secrets/jenkins_agent_ssh_key.pub
+  jenkins_agent_host_key:
+    file: ./secrets/jenkins_agent_host_key
+  jenkins_agent_host_key.pub:
+    file: ./secrets/jenkins_agent_host_key.pub
+  sonarqube_jenkins_token:
+    file: ./secrets/sonarqube_jenkins_token
+  github_app_key.pem:
+    file: ./secrets/github_app_key.pem
+
+networks:
+  devops:
+    name: agentic-devops-network
+  build:
+    name: agentic-devops-build
+
+volumes:
+  jenkins_home:
+  sonar_db:
+  sonar_data:
+  sonar_extensions:
+  sonar_logs:
+  agent_db:
+  registry_data:
+  prometheus_data:
+  grafana_data:
+  ollama_data:
+  agent_workspace:
+  agent_m2:
+  buildkit_state:

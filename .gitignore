@@ -1,0 +1,14 @@
+.env
+__pycache__/
+.venv/
+.pytest_cache/
+.idea/
+.vscode/
+target/
+node_modules/
+*.log
+.DS_Store
+secrets/
+.env.bak
+# Demo app lives in its own repository: rojorabelisoa/agentic-devops-demo-app
+demo-app/

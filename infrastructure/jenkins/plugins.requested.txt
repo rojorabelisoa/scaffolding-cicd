@@ -1,0 +1,13 @@
+# Plugins explicitly requested (name or name:version). Run scripts/jenkins-plugins-lock.sh to regenerate plugins.txt.
+git:5.11.0
+workflow-aggregator:608.v67378e9d3db_1
+pipeline-stage-view:2.41
+github-branch-source:1986.v801e40614d00
+configuration-as-code:2136.veb_3a_554550b_f
+credentials-binding:728.v902a_273b_8947
+junit:1438.v6a_ccb_4b_11004
+sonar:2.19.0
+ssh-slaves:3.1097.v868116049892
+job-dsl:3732.v9a_c49a_61a_313
+pipeline-utility-steps:3.810.va_7672d206740
+timestamper:1.30

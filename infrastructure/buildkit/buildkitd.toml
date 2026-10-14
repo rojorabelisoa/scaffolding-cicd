@@ -1,0 +1,8 @@
+# Rootless BuildKit daemon, reachable only on the "build" network over mTLS.
+[worker.oci]
+  gc = true
+
+# Local POC registry: plain HTTP on the private Compose network.
+[registry."registry:5000"]
+  http = true
+  insecure = true

@@ -1,0 +1,27 @@
+# AppArmor profile for the rootless BuildKit container only.
+# Ubuntu 24.04 sets kernel.apparmor_restrict_unprivileged_userns=1: processes need an
+# explicit "userns" grant to create user namespaces (required by rootlesskit).
+# Everything else in the VM keeps the default restriction.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile buildkitd-rootless flags=(attach_disconnected,mediate_deleted) {
+  include <abstractions/base>
+
+  userns,
+  network,
+  capability,
+  file,
+  mount,
+  umount,
+  remount,
+  pivot_root,
+  signal,
+  ptrace,
+  unix,
+
+  deny @{PROC}/sysrq-trigger rwklx,
+  deny @{PROC}/kcore rwklx,
+  deny /sys/firmware/** rwklx,
+  deny /sys/kernel/security/** rwklx,
+}

@@ -1,0 +1,12 @@
+# Agentic DevOps lab — Claude Code rules
+- Work in phases; stop after each phase for approval.
+- Python/FastAPI/LangGraph is the default agent stack; TypeScript is an allowed alternative with a documented decision.
+- GitHub PRs are the source events; Jenkins runs CI; Argo CD owns Kubernetes deployment via GitOps.
+- No privileged Jenkins controller or host Docker socket mount.
+- Never grant the LLM direct shell, cluster-admin, or unrestricted Git write access.
+- Verify GitHub webhook signatures, enforce branch protections and explicit policy checks.
+- Avoid secrets in code, images, logs and prompts.
+- State exactly what was tested. Do not claim local Docker verification unless Docker was run.
+- Use immutable image digests for deployment and ensure idempotent workflows.
+- Runtime secrets live in `.env` and `secrets/` (git-ignored). Never print, echo or commit their values; pass them to curl via 0600 config files.
+- Never run `docker compose down -v` or delete volumes without explicit user approval.
